@@ -1,0 +1,56 @@
+name: Prevent Self-Approval
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  prevent-self-approval:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch full history so we can compare branches
+
+      - name: Set up Git
+        run: git fetch origin ${{ github.base_ref }}
+
+      - name: Get list of commit authors
+        id: get_authors
+        run: |
+          echo "Getting list of commit authors for this PR..."
+          AUTHORS=$(git log origin/${{ github.base_ref }}..HEAD --pretty=format:"%ae" | sort | uniq)
+          echo "Authors: $AUTHORS"
+          echo "authors=$AUTHORS" >> $GITHUB_ENV
+
+      - name: Get list of requested reviewers
+        id: get_reviewers
+        run: |
+          echo "Fetching list of requested reviewers..."
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          
+          REVIEWERS=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers \
+            | jq -r '.users[].login')
+
+          echo "Reviewers: $REVIEWERS"
+          echo "reviewers=$REVIEWERS" >> $GITHUB_ENV
+
+      - name: Validate that no authors are reviewers
+        run: |
+          echo "Validating that no commit author is assigned as reviewer..."
+          
+          for reviewer in $reviewers; do
+            echo "Checking reviewer: $reviewer"
+            reviewer_email=$(git log --author="$reviewer" --pretty=format:"%ae" | head -n 1)
+            
+            if echo "$authors" | grep -q "$reviewer_email"; then
+              echo "Reviewer $reviewer (email: $reviewer_email) is also a contributor. Please assign someone else."
+              exit 1
+            fi
+          done
+
+          echo "No commit authors are reviewers. All good!"
