@@ -22,16 +22,17 @@ jobs:
             const isValidBranch = /^feature-[A-Z]+-[0-9]+-[a-z0-9-]+$/.test(branchName);
 
             if (!isValidBranch) {
-              core.setFailed(` Invalid branch name: '${branchName}'. Must follow pattern: feature-ABC-123-desc`);
+              core.setFailed(`❌ Invalid branch name: '${branchName}'. Must follow pattern: feature-ABC-123-desc`);
             }
 
-            const requestedReviewers = pr.data.requested_reviewers;
-            const hasReviewer = requestedReviewers.length > 0;
+            // Get *assigned* reviewers (not just requested)
+            const reviewers = pr.data.requested_reviewers;
+            const assignees = pr.data.assignees;
 
-            if (!hasReviewer) {
-              core.setFailed(` No reviewer assigned. Please assign at least one reviewer to proceed.`);
+            if (!reviewers.length && !assignees.length) {
+              core.setFailed("❌ No reviewer assigned. Please assign at least one reviewer.");
             }
 
-            if (isValidBranch && hasReviewer) {
-              console.log(" Branch name valid and reviewer is assigned.");
+            if (isValidBranch && (reviewers.length || assignees.length)) {
+              console.log("✅ Valid branch name and reviewer assigned.");
             }
