@@ -15,48 +15,62 @@ jobs:
           sudo apt update
           sudo apt install gh -y
 
-      - name: Validate branch name
+      - name: Validate branch name format
         id: branch_check
         run: |
           BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
           echo "Checking branch name: $BRANCH_NAME"
 
           if [[ "$BRANCH_NAME" =~ ^feature-[A-Z]+-[0-9]+-[a-zA-Z0-9-]+$ ]]; then
-            echo "Branch name is valid."
             echo "valid=true" >> $GITHUB_OUTPUT
           else
-            echo "Branch name is invalid."
             echo "valid=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Authenticate GitHub CLI
-        run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: Check PR approvals
+      - name: Check reviewer assignment and approvals
         id: reviewer_check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          echo "Checking approvals for $PR_URL"
 
-          REVIEW_COUNT=$(gh pr view "$PR_URL" --json reviews -q '.reviews | map(select(.state == "APPROVED")) | length')
-          echo "Review count: $REVIEW_COUNT"
+          REVIEWERS_ASSIGNED=$(gh pr view "$PR_URL" --json reviewRequests -q '.reviewRequests | length')
+          APPROVED_COUNT=$(gh pr view "$PR_URL" --json reviews -q '.reviews | map(select(.state == "APPROVED")) | length')
 
-          if [[ "$REVIEW_COUNT" -ge 1 ]]; then
+          echo "Reviewers assigned: $REVIEWERS_ASSIGNED"
+          echo "Approvals count: $APPROVED_COUNT"
+
+          if [[ "$REVIEWERS_ASSIGNED" -ge 1 ]]; then
+            echo "has_reviewer=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_reviewer=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [[ "$APPROVED_COUNT" -ge 1 ]]; then
             echo "approved=true" >> $GITHUB_OUTPUT
           else
             echo "approved=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Block merge if policy fails
-        if: steps.branch_check.outputs.valid != 'true' || steps.reviewer_check.outputs.approved != 'true'
+      - name: Block PR if rules fail
+        if: steps.branch_check.outputs.valid != 'true' || steps.reviewer_check.outputs.has_reviewer != 'true' || steps.reviewer_check.outputs.approved != 'true'
         run: |
-          echo "Blocking PR: Invalid branch name or no approval."
+          echo "Merge blocked:"
+          if [[ "${{ steps.branch_check.outputs.valid }}" != "true" ]]; then
+            echo " - Invalid branch name format."
+          fi
+          if [[ "${{ steps.reviewer_check.outputs.has_reviewer }}" != "true" ]]; then
+            echo " - No reviewer assigned."
+          fi
+          if [[ "${{ steps.reviewer_check.outputs.approved }}" != "true" ]]; then
+            echo " - No approval received."
+          fi
           exit 1
 
       - name: Allow merge (info only)
-        if: steps.branch_check.outputs.valid == 'true' && steps.reviewer_check.outputs.approved == 'true'
+        if: steps.branch_check.outputs.valid == 'true' && steps.reviewer_check.outputs.has_reviewer == 'true' && steps.reviewer_check.outputs.approved == 'true'
         run: |
-          echo "PR meets branch naming and approval policy."
+          echo "All checks passed. Merge allowed."
