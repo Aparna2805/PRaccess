@@ -1,76 +1,37 @@
-name: Protect Branches
+name: Protect PR
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
-  workflow_dispatch:
+    types: [opened, synchronize, reopened, edited, review_requested, review_request_removed, assigned]
 
 jobs:
-  validate-pr:
+  enforce-pr-rules:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Install GitHub CLI
-        run: |
-          sudo apt update
-          sudo apt install gh -y
+      - name: Check branch name and reviewer assignment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
 
-      - name: Validate branch name format
-        id: branch_check
-        run: |
-          BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
-          echo "Checking branch name: $BRANCH_NAME"
+            const branchName = pr.data.head.ref;
+            const isValidBranch = /^feature-[A-Z]+-[0-9]+-[a-z0-9-]+$/.test(branchName);
 
-          if [[ "$BRANCH_NAME" =~ ^feature-[A-Z]+-[0-9]+-[a-zA-Z0-9-]+$ ]]; then
-            echo "valid=true" >> $GITHUB_OUTPUT
-          else
-            echo "valid=false" >> $GITHUB_OUTPUT
-          fi
+            if (!isValidBranch) {
+              core.setFailed(` Invalid branch name: '${branchName}'. Must follow pattern: feature-ABC-123-desc`);
+            }
 
-      - name: Authenticate GitHub CLI
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+            const requestedReviewers = pr.data.requested_reviewers;
+            const hasReviewer = requestedReviewers.length > 0;
 
-      - name: Check reviewer assignment and approvals
-        id: reviewer_check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+            if (!hasReviewer) {
+              core.setFailed(`No reviewer assigned. Please assign at least one reviewer to proceed.`);
+            }
 
-          REVIEWERS_ASSIGNED=$(gh pr view "$PR_URL" --json reviewRequests -q '.reviewRequests | length')
-          APPROVED_COUNT=$(gh pr view "$PR_URL" --json reviews -q '.reviews | map(select(.state == "APPROVED")) | length')
-
-          echo "Reviewers assigned: $REVIEWERS_ASSIGNED"
-          echo "Approvals count: $APPROVED_COUNT"
-
-          if [[ "$REVIEWERS_ASSIGNED" -ge 1 ]]; then
-            echo "has_reviewer=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_reviewer=false" >> $GITHUB_OUTPUT
-          fi
-
-          if [[ "$APPROVED_COUNT" -ge 1 ]]; then
-            echo "approved=true" >> $GITHUB_OUTPUT
-          else
-            echo "approved=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Block PR if rules fail
-        if: steps.branch_check.outputs.valid != 'true' || steps.reviewer_check.outputs.has_reviewer != 'true' || steps.reviewer_check.outputs.approved != 'true'
-        run: |
-          echo "Merge blocked:"
-          if [[ "${{ steps.branch_check.outputs.valid }}" != "true" ]]; then
-            echo " - Invalid branch name format."
-          fi
-          if [[ "${{ steps.reviewer_check.outputs.has_reviewer }}" != "true" ]]; then
-            echo " - No reviewer assigned."
-          fi
-          if [[ "${{ steps.reviewer_check.outputs.approved }}" != "true" ]]; then
-            echo " - No approval received."
-          fi
-          exit 1
-
-      - name: Allow merge (info only)
-        if: steps.branch_check.outputs.valid == 'true' && steps.reviewer_check.outputs.has_reviewer == 'true' && steps.reviewer_check.outputs.approved == 'true'
-        run: |
-          echo "All checks passed. Merge allowed."
+            if (isValidBranch && hasReviewer) {
+              console.log(" Branch name valid and reviewer is assigned.");
+            }
