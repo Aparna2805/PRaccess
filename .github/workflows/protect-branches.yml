@@ -1,68 +1,46 @@
-name: Protect Branches
+name: Protect Pull Requests
 
 on:
-  push:
-    branches: [ main, development, master ]
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 jobs:
-  protect:
+  validate-pr:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Install GitHub CLI
-        run: |
-          sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-key C99B11DEB97541F0
-          sudo apt-add-repository https://cli.github.com/packages
-          sudo apt update
-          sudo apt install gh -y
-
-      - name: Validate branch name
+      - name: Check branch name format
         id: branch_check
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          echo "Checking branch name: $BRANCH_NAME"
-          
-          if [[ "$BRANCH_NAME" =~ ^(main|master|feature/.*|release/.*)$ ]]; then
-            echo "Branch name is valid according to the policy."
+          BRANCH_NAME="${{ github.head_ref }}"
+          echo "Branch name: $BRANCH_NAME"
+
+          if [[ "$BRANCH_NAME" =~ ^feature-[A-Z]+-[0-9]+-[a-zA-Z0-9-]+$ ]]; then
             echo "valid=true" >> $GITHUB_OUTPUT
           else
-            echo "Branch name does not follow naming policy. Merge is not allowed."
             echo "valid=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Check for reviewers and approvals
+      - name: Check if reviewer is assigned
         id: reviewer_check
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          PR_URL=$(gh pr list --head "$BRANCH_NAME" --json url -q '.[0].url')
-          if [[ -z "$PR_URL" ]]; then
-            echo "No pull request found for branch $BRANCH_NAME. Review check cannot proceed."
-            echo "approved=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          echo "Checking reviewers for PR #$PR_NUMBER in $REPO"
 
-          echo "Pull request detected: $PR_URL"
-          REVIEW_COUNT=$(gh pr view "$PR_URL" --json reviews -q '.reviews | map(select(.state == "APPROVED")) | length')
-          if [[ "$REVIEW_COUNT" -ge 1 ]]; then
-            echo "Pull request has received at least one approval."
-            echo "approved=true" >> $GITHUB_OUTPUT
+          REVIEWER_COUNT=$(gh api repos/$REPO/pulls/$PR_NUMBER/requested_reviewers --jq '.users | length')
+
+          if [[ "$REVIEWER_COUNT" -ge 1 ]]; then
+            echo "reviewer_assigned=true" >> $GITHUB_OUTPUT
           else
-            echo "Pull request does not have any approvals yet."
-            echo "approved=false" >> $GITHUB_OUTPUT
+            echo "reviewer_assigned=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Allow merge if conditions are met
-        if: steps.branch_check.outputs.valid == 'true' && steps.reviewer_check.outputs.approved == 'true'
+      - name: Final gate — block if any condition fails
+        if: steps.branch_check.outputs.valid != 'true' || steps.reviewer_check.outputs.reviewer_assigned != 'true'
         run: |
-          echo "Merge is allowed: valid branch name and approval are both confirmed."
-
-      - name: Block merge due to failing conditions
-        if: steps.branch_check.outputs.valid != 'true' || steps.reviewer_check.outputs.approved != 'true'
-        run: |
-          echo "Merge is blocked due to either an invalid branch name or missing required approval."
+          echo "❌ Merge is blocked: Invalid branch name or no reviewer assigned."
           exit 1
